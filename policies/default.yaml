@@ -1,0 +1,85 @@
+# Sentinel default policy bundle (PROVISIONAL — see docs/decisions.md).
+# Precedence: DENY > REQUIRE_APPROVAL > ALLOW. Anything without a matching ALLOW is denied.
+version_label: default-2026-10-17
+
+# Humans allowed to approve REQUIRE_APPROVAL requests and to lift safe mode.
+approvers: [human.secops]
+approval_ttl_seconds: 900
+
+tools:
+  docs.read:
+    protected: false
+    safe_in_restricted: true
+    description: Read a document from the internal document store.
+  crm.get_record:
+    protected: false
+    safe_in_restricted: true
+    description: Read a customer record.
+  crm.update_record:
+    description: Update one field on a customer record.
+  crm.export:
+    description: Export all customer records.
+  crm.bulk_delete:
+    description: Delete customer records matching a filter.
+  email.send:
+    description: Send an email.
+  payments.refund:
+    description: Refund an order.
+  canary.protected_noop:
+    description: Synthetic tool used by the watchdog. Must always be denied.
+
+rules:
+  # ---- hard denies ---------------------------------------------------------------------
+  - id: R-CANARY-DENY
+    effect: DENY
+    match: {tools: [canary.protected_noop]}
+    reason: CANARY_MUST_DENY
+    description: Enforcement canary — if this is ever allowed, enforcement is broken.
+
+  - id: R-NO-BULK-DELETE
+    effect: DENY
+    match: {tools: [crm.bulk_delete]}
+    reason: DESTRUCTIVE_BULK_OPERATION
+    description: Agents may never bulk-delete customer data.
+
+  - id: R-DF-SENSITIVE-EXTERNAL
+    effect: DENY
+    match:
+      tools: [email.send]
+      data_labels_any: [confidential, pii]
+      destination_domain_not_in: [corp.example]
+    reason: SENSITIVE_DATA_TO_UNAPPROVED_DESTINATION
+    description: Confidential or PII data may not be sent outside corp.example.
+
+  # ---- sequence rules ------------------------------------------------------------------
+  - id: R-SEQ-EXPORT-THEN-EXTERNAL-EMAIL
+    effect: DENY
+    match:
+      tools: [email.send]
+      after_tools_any: [crm.export]
+      destination_domain_not_in: [corp.example]
+    reason: EXPORT_FOLLOWED_BY_EXTERNAL_SEND
+    description: An external email after a bulk export in the same run is treated as exfiltration.
+
+  # ---- approval required ---------------------------------------------------------------
+  - id: R-REFUND-HIGH-VALUE
+    effect: REQUIRE_APPROVAL
+    match: {tools: [payments.refund], arg_gt: {amount: 500}}
+    reason: HIGH_VALUE_REFUND
+    description: Refunds above 500 need a human approver.
+
+  # ---- allows --------------------------------------------------------------------------
+  - id: R-ALLOW-READS
+    effect: ALLOW
+    match: {tools: [docs.read, crm.get_record], roles_any: [support_agent, analyst]}
+    reason: READ_PERMITTED
+
+  - id: R-ALLOW-SUPPORT-WRITES
+    effect: ALLOW
+    match: {tools: [crm.update_record, payments.refund, email.send], roles_any: [support_agent]}
+    reason: SUPPORT_WRITE_PERMITTED
+
+  - id: R-ALLOW-ANALYST-EXPORT
+    effect: ALLOW
+    match: {tools: [crm.export, email.send], roles_any: [analyst]}
+    reason: ANALYST_EXPORT_PERMITTED
