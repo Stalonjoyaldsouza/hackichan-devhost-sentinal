@@ -102,7 +102,67 @@ class OfflineHeuristicProvider:
 
     def complete_json(self, task: str, system: str, payload: dict[str, Any],
                       schema: dict[str, Any]) -> dict[str, Any]:
-        return {"threat": self._threat, "risk": self._risk, "audit": self._audit}[task](payload)
+        handlers = {"threat": self._threat, "risk": self._risk, "audit": self._audit,
+                    "guidelines": self._guidelines, "understand": self._understand,
+                    "triage": self._triage}
+        return handlers[task](payload)
+
+    # ---- SDK project-analysis tasks ----------------------------------------------------------
+    _TOPICS = {
+        "sensitive_data_access": r"personal data|pii|ssn|customer data|payment|health|confidential|sensitive",
+        "messaging": r"e-?mail|send(ing)? (a )?message|notify|sms|slack",
+        "external_api": r"external|third[- ]part|outside|api call|http|network|exfiltrat",
+        "code_execution": r"shell|command|execute|exec\b|eval|code execution|subprocess",
+        "database": r"database|sql|db write|record",
+        "file_system": r"file system|filesystem|delete files|write files",
+        "secret_access": r"secret|api key|credential|password|token",
+        "tool_call": r"tool|function call",
+        "inter_agent": r"agent[- ]to[- ]agent|inter-?agent|delegat|handoff",
+        "llm_call": r"prompt|model provider|llm",
+    }
+
+    def _guidelines(self, payload: dict[str, Any]) -> dict[str, Any]:
+        reqs = []
+        for raw in re.split(r"(?<=[.!?])\s+|\n+", payload["text"]):
+            line = raw.strip(" -*#>\t0123456789.)")
+            if len(line) < 12 or any(p.search(line) for p in _INJECTION):
+                continue  # too short, or instruction-like text aimed at the tool: never a requirement
+            low = line.lower()
+            if re.search(r"\b(must|shall|never|prohibited|forbidden|not allowed)\b", low):
+                strength = "MUST"
+            elif re.search(r"\b(should|avoid|prefer)\b", low):
+                strength = "SHOULD"
+            else:
+                strength = None
+            if not strength:
+                continue
+            topics = [t for t, pat in self._TOPICS.items() if re.search(pat, low)]
+            reqs.append({"text": line[:300], "strength": strength, "topics": topics})
+        return {"requirements": reqs}
+
+    def _understand(self, payload: dict[str, Any]) -> dict[str, Any]:
+        proj, pts = payload["project"], payload["points"]
+        by = lambda cat: sorted({f"{p['symbol']} ({p['file']})" for p in pts  # noqa: E731
+                                 if p["category"] == cat})
+        readme = (proj.get("readme") or "").strip().splitlines()
+        purpose = next((ln.strip("# ").strip() for ln in readme if ln.strip("# ").strip()), "unknown")
+        tools = sorted({p["via_tool"] or p["title"] for p in pts if p["category"] == "tool_call"})
+        crit = [p for p in pts if p["risk"] in {"HIGH", "CRITICAL"}]
+        return {
+            "summary": (f"{proj['root_name']}: {proj['files_scanned']} source files "
+                        f"({', '.join(proj['languages']) or 'unknown'}); frameworks: "
+                        f"{', '.join(proj['frameworks']) or 'none detected'}; {len(pts)} security-"
+                        f"relevant operations, {len(crit)} high/critical. (offline heuristic summary)"),
+            "purpose": purpose, "agents": by("inter_agent"), "tools": tools,
+            "data_sources": by("database") + by("sensitive_data_access"),
+            "external_systems": by("external_api") + by("messaging") + by("llm_call"),
+            "workflows": [f"entry point: {e}" for e in proj.get("entry_points", [])],
+            "concerns": [f"{p['title']} at {p['file']}:{p['line']}" for p in crit[:8]],
+        }
+
+    def _triage(self, payload: dict[str, Any]) -> dict[str, Any]:
+        # A keyword stand-in cannot judge risk; it returns no adjustments rather than guessing.
+        return {"adjustments": [], "additional": []}
 
     @staticmethod
     def _texts(ev: dict[str, Any]) -> list[str]:

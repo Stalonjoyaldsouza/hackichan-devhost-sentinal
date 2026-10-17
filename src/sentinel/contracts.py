@@ -86,6 +86,7 @@ class EventType(StrEnum):
     MODE_CHANGED = "mode_changed"
     HEARTBEAT = "heartbeat"
     AUDIT_PROBE = "audit_probe"
+    AGENT_TASK = "agent_task"
 
 
 class DataLabel(StrEnum):

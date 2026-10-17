@@ -116,3 +116,22 @@ containment probe is injected as a callable, so neither module imports the other
 - Data-flow detection does not follow paraphrased or transformed content and only knows labels
   assigned to registered resources.
 - Single-node SQLite; no HA, no remote attestation of the watchdog.
+
+## 5. SDK layer (`sentinel/sdk/`)
+
+```text
+ business project ──▶ scanner ─▶ guidelines ─▶ code-analyst ─▶ understanding ─▶ triage ─▶ analysis.json
+        (untrusted)     (det.)      (AI/offline)    (det.)         (AI/offline)   (AI/offline)   │
+                                                                                                  ▼
+ developer: select ──▶ state.json ──▶ policygen ──▶ policy.yaml ──▶ PolicyEngine (same as core)
+        │                                                              ▲
+        └─ adds @guard("MP-…") ──▶ runtime Sentinel.check ─────────────┘
+                                         │ events (names only)
+                                         ▼
+                     .sentinel/audit.db ──▶ lifecycle (IDENTIFIED/SELECTED/IMPLEMENTED/ACTIVE)
+                              └──────────▶ sentinel sdk watch / activity / status
+```
+
+Trust boundaries: the target project and guideline documents are untrusted input; AI output is
+validated and cannot remove or select points or alter policy; the runtime guard logs argument names
+only. The audit chain gates every `ACTIVE` claim.

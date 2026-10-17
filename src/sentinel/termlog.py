@@ -137,6 +137,14 @@ class TerminalLog:
                 color = RED if to == "RESTRICTED" else GREEN
                 return s(f"{ts} ▌MODE {ev.metadata.get('from')} → {to} reason={reasons}{cont}"
                          f" by {who} ", BOLD, REV, color)
+            case EventType.AGENT_TASK:
+                md = ev.metadata
+                st = str(md.get("status"))
+                color = {"RUNNING": CYAN, "COMPLETED": GREEN}.get(st, RED)
+                where = " ".join(x for x in (_clean(md.get("target") or "", 60),
+                                             _clean(md.get("progress") or "", 12)) if x)
+                text = _clean(md.get("detail") or md.get("description") or "", 140)
+                return row(f"◆ {st}"[:11], color, f"{where + ' · ' if where else ''}{text}")
             case EventType.HEARTBEAT:
                 return row("· HEARTBEAT", DIM, f"round={ev.metadata.get('round')}"
                            f" mode={ev.metadata.get('mode')}")

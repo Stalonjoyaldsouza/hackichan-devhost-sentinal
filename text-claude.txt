@@ -1,0 +1,34 @@
+I want to convert the existing application into a reusable **AI Agent Security SDK** that developers can run directly on their business application projects.
+
+The application has already been developed, so inspect the existing codebase and reuse its current functionality, agents, services, and dashboard wherever possible. Do not rebuild the application from scratch.
+
+### Required functionality
+
+1. **Run the SDK through a command:** Developers should be able to run a command from their business project directory to initialize and execute the SDK. The SDK should analyse the target project rather than its own source code.
+
+2. **Understand the business project using AI agents:** When executed, the SDK's agents should inspect the target project's structure, code, AI agents, tools, workflows, and integrations to understand how the business application operates.
+
+3. **External guidelines:** Provide an option to supply external guidelines, documents, or instructions that the SDK's analysis agents should consider when examining the business project.
+
+4. **Identify monitoring points:** The SDK agents should analyse the business application and identify important points in its AI agents and workflows that need to be monitored for security and safety. Examples include sensitive data access, tool calls, external API interactions, inter-agent communication, and potentially unsafe actions.
+
+5. **List and manage monitoring points:** Display the identified monitoring points with their descriptions, risk levels, relevant source-code locations, and reasons for monitoring. Allow developers to review and select the points they want to monitor.
+
+6. **Agent activity tracking:** Show which SDK agent is performing each task, what it is currently analysing, its current status, completed work, and results. Display ongoing tasks, completed tasks, failures, and other relevant activity in the existing dashboard.
+
+7. **Preserve existing functionality:** Reuse the existing application's dashboard and backend wherever appropriate. Refactor the code into reusable SDK components and separate SDK functionality from the dashboard where necessary.
+
+### Implementation requirements
+
+- Inspect the existing repository, architecture, dependencies, and documentation before making changes.
+- Implement a suitable SDK interface, CLI commands, and integration mechanism based on the existing technology stack.
+- Allow the SDK to be installed and used in other business application projects with minimal configuration.
+- Ensure the SDK analyses the target project and uses the supplied guidelines as additional context.
+- Clearly distinguish between monitoring points that have been identified, selected, implemented, and actively monitored.
+- Do not claim that a monitoring point is active unless the corresponding monitoring mechanism is actually working.
+- Keep the existing application's features intact and avoid unnecessary architectural changes.
+- Add appropriate tests and documentation for installation, configuration, commands, and usage.
+
+First inspect the existing application and determine the best way to convert it into an SDK. Then implement the changes incrementally, ensuring that the SDK can be executed against a separate business application project and that its analysis results and agent activity are visible through the existing interface.
+
+**The primary goal is to make the existing security application usable as a developer SDK: run a command inside a business project, let the SDK agents understand that project, accept external guidelines, identify and list security monitoring points, and show what each SDK agent is doing.**

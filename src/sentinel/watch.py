@@ -37,7 +37,11 @@ def watch(
     try:
         while max_iterations is None or iterations < max_iterations:
             iterations += 1
-            for stored in store.since(cursor):
+            try:
+                batch = store.since(cursor)
+            except ValueError:  # a tampered row that no longer parses; reported via the chain check
+                batch = []
+            for stored in batch:
                 cursor = stored.seq
                 ev = stored.event
                 if ev.event_type is EventType.HEARTBEAT:

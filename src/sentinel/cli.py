@@ -15,6 +15,7 @@ from sentinel.audit import AuditStore
 from sentinel.investigator import reconstruct
 from sentinel.policy import PolicyEngine, PolicyError, describe
 from sentinel.runtime import DEFAULT_POLICY
+from sentinel.sdk.cli import register as register_sdk
 from sentinel.termlog import TerminalLog
 from sentinel.watch import watch
 
@@ -114,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     pc = psub.add_parser("check", help="validate a policy bundle")
     pc.add_argument("--policy", default=str(DEFAULT_POLICY))
     pc.set_defaults(func=cmd_policy_check)
+    register_sdk(sub)
     return p
 
 

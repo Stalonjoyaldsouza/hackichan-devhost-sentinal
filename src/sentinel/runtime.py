@@ -22,7 +22,14 @@ from sentinel.tools.systems import Systems
 from sentinel.verification import OutcomeVerifier
 from sentinel.watchdog import Watchdog
 
-DEFAULT_POLICY = Path(__file__).resolve().parents[2] / "policies" / "default.yaml"
+
+def _default_policy() -> Path:
+    """Repo checkout → policies/default.yaml; installed wheel → the copy shipped in the package."""
+    repo = Path(__file__).resolve().parents[2] / "policies" / "default.yaml"
+    return repo if repo.exists() else Path(__file__).resolve().parent / "data" / "default.yaml"
+
+
+DEFAULT_POLICY = _default_policy()
 
 
 @dataclass
