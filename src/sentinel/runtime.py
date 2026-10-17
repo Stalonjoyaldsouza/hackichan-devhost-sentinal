@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from sentinel.ai import AISupervisor, Provider
 from sentinel.approvals import ApprovalService
 from sentinel.audit import AuditStore
 from sentinel.contracts import CallOutcome, Mode
@@ -34,12 +35,14 @@ class Runtime:
     controller: SafeModeController
     watchdog: Watchdog
     monitor: Monitor
+    ai: AISupervisor | None = None
 
     @classmethod
     def build(
         cls, db_path: Path | str, policy_path: Path | str = DEFAULT_POLICY,
         listeners: list[Listener] | None = None, tool_timeout_seconds: float = 5.0,
         required_healthy_rounds: int = 2,
+        ai_provider: Provider | None = None,
     ) -> Runtime:
         systems = build_systems()
         store = AuditStore(db_path)
@@ -82,7 +85,12 @@ class Runtime:
         controller.containment_probe = containment_probe
         watchdog = Watchdog(gateway=gateway, store=store, systems=systems,
                             controller=controller, credential=wd_cred)
-        return cls(systems, store, policy, identities, gateway, controller, watchdog, monitor)
+        ai = None
+        if ai_provider is not None:
+            # Read-only observer: gets events, emits findings, holds no gateway credential.
+            ai = AISupervisor(ai_provider, store, gateway.emit)
+            gateway.listeners.append(ai)
+        return cls(systems, store, policy, identities, gateway, controller, watchdog, monitor, ai)
 
     # ---- convenience ---------------------------------------------------------------------
     def agent(self, agent_id: str, roles: tuple[str, ...], run_id: str) -> GatewayClient:
@@ -100,6 +108,8 @@ class Runtime:
         return self.controller.recover(principal.principal_id)
 
     def close(self) -> None:
+        if self.ai:
+            self.ai.stop()
         self.watchdog.stop()
         self.gateway.close()
         self.store.close()

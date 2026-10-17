@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from sentinel import demo
+from sentinel.ai import make_provider
 from sentinel.audit import AuditStore
 from sentinel.investigator import reconstruct
 from sentinel.policy import PolicyEngine, PolicyError, describe
@@ -29,7 +30,12 @@ def cmd_demo(args: argparse.Namespace) -> int:
         DEFAULT_DB_DIR / f"sentinel-demo-{datetime.now():%Y%m%d-%H%M%S}.db")
     db.parent.mkdir(parents=True, exist_ok=True)
     selected = list(demo.SCENARIOS) if args.scenario == "all" else [args.scenario]
-    checks = demo.run(selected, db, _log(args))
+    try:
+        provider = make_provider(args.ai)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    checks = demo.run(selected, db, _log(args), provider)
     return 0 if checks and all(ok for *_, ok in checks) else 1
 
 
@@ -81,6 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("demo", help="run the scripted MVP scenarios with live terminal output")
     d.add_argument("--scenario", default="all", choices=["all", *demo.SCENARIOS])
     d.add_argument("--db", help="audit store path (default: var/sentinel-demo-<timestamp>.db)")
+    d.add_argument("--ai", choices=["auto", "groq", "offline", "off"], default=None,
+                   help="advisory AI agents: auto = Groq if GROQ_API_KEY is set, else the "
+                        "offline heuristic stand-in (default: $SENTINEL_AI or auto)")
     d.set_defaults(func=cmd_demo)
 
     w = sub.add_parser("watch", help="independently tail an audit store and alert on gaps")

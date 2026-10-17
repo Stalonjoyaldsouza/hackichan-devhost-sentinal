@@ -119,9 +119,11 @@ class TerminalLog:
             case EventType.FINDING:
                 sev = str(ev.metadata.get("severity"))
                 color = RED if sev in {"HIGH", "CRITICAL"} else YELLOW
+                src = ev.metadata.get("source")
+                ai = s(f" [AI:{_clean(src, 40)}]", MAGENTA) if src else ""
                 return row("⚠ FINDING", color,
                            f"{sev} {ev.metadata.get('component')}: "
-                           f"{_clean(ev.metadata.get('summary'), 200)}")
+                           f"{_clean(ev.metadata.get('summary'), 200)}{ai}")
             case EventType.HEALTH_CHECK:
                 st = str(ev.metadata.get("status"))
                 color = {"OK": GREEN, "DEGRADED": YELLOW}.get(st, RED)

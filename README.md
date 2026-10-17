@@ -9,6 +9,41 @@ fails, the system drops into a **restricted safe mode**. All output goes to the 
 > Status: hackathon MVP. Agents are scripted and tools are in-memory mocks. Nothing here is a real
 > integration with an LLM, MCP server or external API. See [Limitations](#limitations).
 
+## The AI agents watching the stream
+
+Three advisory agents read the event stream (sanitised, minimal fields only) and report findings
+to the terminal and the audit trail:
+
+| Agent | Looks for | Finding component |
+|---|---|---|
+| `agent.ai.threat` | prompt injection, exfiltration patterns, probing | `monitoring` |
+| `agent.ai.risk` | an action that doesn't fit the agent's stated purpose | `risk` |
+| `agent.ai.audit` | summarises a run that had a block or an outcome mismatch, citing event ids | `audit` |
+
+**They advise; deterministic code enforces.** The agents hold no gateway credential and no tool, so
+nothing they say can allow, deny or execute anything. Every model answer is schema-validated,
+severity is capped at HIGH, cited event ids must exist in the audit store (otherwise the finding is
+`INCONCLUSIVE`), and a failing or misbehaving model only produces a visible `DEGRADED` health line.
+
+| `SENTINEL_AI` / `--ai` | Behaviour |
+|---|---|
+| `auto` (default) | Groq (`openai/gpt-oss-120b`, override with `SENTINEL_AI_MODEL`) if `GROQ_API_KEY` is set, otherwise `offline` |
+| `groq` | Always Groq; errors at startup if `GROQ_API_KEY` is missing |
+| `offline` | Keyword/pattern stand-in. **Not an AI model**; findings are tagged `[AI:offline-heuristic]` |
+| `off` | No AI agents |
+
+Groq models `openai/gpt-oss-120b` / `-20b` use strict schema-constrained JSON; any other model
+(e.g. `llama-3.3-70b-versatile`) runs in plain JSON mode with the schema in the prompt. Either way
+every answer is validated again locally. The Groq path is unit-tested against a fake SDK client; it
+has not been exercised against the live API in this repository's test run.
+
+```bash
+export GROQ_API_KEY=your-key
+```
+```bash
+uv run sentinel demo --ai groq
+```
+
 ## Quick start
 
 ```bash
@@ -33,7 +68,7 @@ uv run sentinel demo --db var/live.db
 
 | Command | What it does |
 |---|---|
-| `sentinel demo [--scenario all\|baseline\|A\|B\|approval\|C\|D\|E] [--db PATH]` | Run scripted scenarios with live output |
+| `sentinel demo [--scenario all\|baseline\|A\|B\|approval\|AI\|C\|D\|E] [--ai MODE] [--db PATH]` | Run scripted scenarios with live output |
 | `sentinel watch --db PATH [--from-start] [--heartbeat-timeout S]` | Tail an audit store from a separate process; alert on missing heartbeat or broken hash chain |
 | `sentinel audit verify --db PATH` | Recompute the audit hash chain (exit 2 if broken) |
 | `sentinel audit report --db PATH --run RUN_ID` | Evidence-linked incident timeline; gaps are shown as `UNKNOWN` |
@@ -50,6 +85,7 @@ Global flags: `-v/--verbose` shows heartbeats, OK health checks and synthetic ca
 | A | 2 Pre-execution enforcement | `crm.bulk_delete` denied; the target system's own log proves it was never called; malformed args rejected |
 | B | 1 Sequence & data flow | Read confidential doc (allowed) → internal email (allowed) → external email **denied**, with evidence linking to the read. A different agent pasting the text is caught by content fingerprint. Export → external send is caught by a sequence rule |
 | approval | 2 | High-value refund held; human approves; executes once; replay refused |
+| AI | 1, 4 (advisory) | An injected instruction is flagged by the threat agent while policy rules, not the AI, allow/deny. Risk and audit agents report with cited events |
 | C | 3 Outcome verification | Tool says "ok" but CRM is unchanged → `FAILED`; half-applied refund → `PARTIAL` |
 | D | 4 Containment, 5 Control validation | Audit outage, stale policy and an uninstrumented write are each detected → `RESTRICTED`; containment verified by live probe; recovery needs healthy rounds **and** an authorised human |
 | E | Audit | Timeline for a run with every line citing an event id; hash chain verified |
@@ -91,7 +127,9 @@ These are deliberate MVP boundaries. Do not present them as solved.
 - **Same-process isolation.** Gateway and agents share a Python process. A hostile agent with
   interpreter access could reach tool objects. This is *detected* by reconciling target-system
   access logs with the audit trail, not *prevented*.
-- **Mock integrations only.** No real LLM, MCP server or external API.
+- **Mock integrations only.** The monitored agents are scripted; no MCP server or external API.
+- **AI agents are advisory and see sanitised data.** Long text fields are truncated before analysis, so
+  an injection hidden deep in a long argument may be missed. The offline stand-in is pattern matching only.
 - **Data-flow coverage.** Paraphrased or summarised content that shares no 8-word run with the
   source is not caught by fingerprinting. Run/actor taint is conservative and can over-block, e.g.
   any external email after reading PII in the same run.

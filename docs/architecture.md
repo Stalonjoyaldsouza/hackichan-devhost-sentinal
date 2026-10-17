@@ -37,7 +37,7 @@ LLM agents, LangGraph, OPA, Postgres, OpenTelemetry and React for a hackathon MV
 | 6 | HIGH | **Watchdog trusts self-reported health.** | A broken control reports "healthy". | Probes test *behaviour*: a canary request must be denied and the canary tool must not run; audit probe writes then reads back and verifies the chain; policy probe re-hashes the file on disk. |
 | 7 | MEDIUM | **Safe-mode effectiveness unverified.** | "Contained" claimed while tools still run. | After entering RESTRICTED the controller issues a probe for a protected tool and records `containment_verified=true/false`. |
 | 8 | MEDIUM | **Data-flow lineage across transformations is not tractable in general.** | Over-claiming lineage. | Two deterministic mechanisms: run/actor taint (conservative) + content fingerprints (8-word shingles). Paraphrase/summarisation that removes shingles is **not** detected — documented. |
-| 9 | MEDIUM | **Five LLM agents are unjustified for MVP.** No model provider is chosen; LLM agents add nondeterminism to demos. | Demo fragility; agent-count-for-its-own-sake (principle 9). | MVP ships **zero** LLM agents. A deterministic monitor raises findings (e.g. repeated denies). Risk/threat/audit LLM agents are deferred until a provider is approved; the investigator is deterministic and cites event IDs. |
+| 9 | MEDIUM | **Five LLM agents are unjustified for MVP.** LLM agents add nondeterminism and an injection surface. | Demo fragility; agent-count-for-its-own-sake (principle 9). | **Revised after user feedback:** three advisory agents with distinct jobs (threat, risk, audit) in `sentinel/ai/`, plus the deterministic monitor and investigator. They hold no credentials, emit findings only, are evidence-verified and severity-capped, and fail visibly. |
 | 10 | LOW | Heavy proposed stack (Postgres, OPA, LangGraph, OTel, React) vs. "keep the MVP small". | Setup time dominates build time. | Python 3.12 + Pydantic + PyYAML + SQLite; terminal output instead of a dashboard, per user request. |
 
 ### Single points of failure
@@ -97,6 +97,7 @@ containment probe is injected as a callable, so neither module imports the other
 | Watchdog | `sentinel/watchdog.py` | deterministic probes |
 | Safe-mode controller | `sentinel/safemode.py` | deterministic |
 | Monitor | `sentinel/monitor.py` | deterministic heuristics (no LLM) |
+| Threat / risk / audit agents | `sentinel/ai/` | LLM (Groq) or offline stand-in; advisory only |
 | Investigator | `sentinel/investigator.py` | deterministic timeline |
 | Mock target systems | `sentinel/tools/` | in-memory, with independent access logs |
 | Terminal output | `sentinel/termlog.py`, `sentinel/cli.py`, `sentinel/watch.py` | — |
@@ -110,8 +111,8 @@ containment probe is injected as a callable, so neither module imports the other
   interpreter can reach tool objects directly. This is *detected* (bypass reconciliation against
   target-system logs), not *prevented*. Production would need process/network isolation and
   credentials held only by the gateway.
-- No real LLM agent, MCP server or external API integration — the agent is scripted and the tools
-  are mocks. Nothing here should be presented as a real integration.
+- The monitored agents are scripted and the tools are mocks; no MCP server or external API. The
+  advisory AI agents' Groq path is unit-tested with a fake client, not exercised live. Nothing here should be presented as a real integration.
 - Data-flow detection does not follow paraphrased or transformed content and only knows labels
   assigned to registered resources.
 - Single-node SQLite; no HA, no remote attestation of the watchdog.
