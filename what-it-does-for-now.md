@@ -1,0 +1,6 @@
+Blocks before execution. Every call is checked against fixed rules in policies/default.yaml; anything not explicitly allowed is denied. No AI model can approve an action.
+Fails closed. If the policy check or the audit log is unavailable, the call is denied.
+Catches leaks across steps. Reading a confidential document and then emailing it outside the company is blocked, with a link back to the read. It also catches a different agent pasting the same text, and an export followed by an external email.
+Checks results independently. It reads the actual record, ledger or outbox afterwards. A tool that says “ok” without making the change is marked as failed.
+Watches its own controls. A watchdog tests that blocking, policy and audit logging still work, and that no system was written to without going through Sentinel. If something breaks, it switches to a restricted mode. Getting out of that mode needs two healthy checks in a row plus a named human approver.
+Keeps a tamper-evident audit log, which produces a timeline for any run where every line points to a recorded event.
