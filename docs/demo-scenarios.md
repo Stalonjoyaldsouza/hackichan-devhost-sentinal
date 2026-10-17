@@ -33,6 +33,15 @@ against the ledger. A replay is refused (`APPROVAL_ALREADY_USED`). The tests als
 self-approval, a non-listed approver, an agent acting as approver, a different agent reusing the
 approval, expiry, and safe mode entered between approval and resume.
 
+## AI — advisory agents next to deterministic enforcement
+`agent.injected` exports CRM data with a purpose that contains an injected instruction, then tries
+to email the export out. Policy allows the export (analyst role) and blocks the email by rule. The
+threat agent flags the injection, the risk agent flags a second export whose purpose doesn't fit,
+and the audit agent summarises the run with cited events. The checks assert that enforcement did
+not depend on the AI and that no AI finding exceeds HIGH. The tests additionally cover hostile
+model output (fake ids, CRITICAL severity, oversized text), malformed output, provider outage and
+queue overflow.
+
 ## C — claimed success vs. actual state
 The CRM is put into a fault mode where it returns `{"status": "ok"}` without writing. The verifier
 reads the record back → `FAILED`, and the monitor raises a HIGH finding. A refund that applies half
