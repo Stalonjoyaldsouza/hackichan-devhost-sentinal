@@ -1,0 +1,5 @@
+Same process. Sentinel and the agents run in one Python process, so a hostile agent could call a tool directly. That is detected afterwards, not prevented.
+Simulated only. The agents are scripted and the tools are in-memory stand-ins. There is no real AI model or external service connected.
+Rewritten text gets through. A leak that rewords the confidential text isn’t caught. The rule is also cautious: after reading customer data, any external email in that run is blocked.
+Lost on restart. Pending approvals and agent identities are held in memory.
+No way to clear a detected bypass. Once one is detected, it stays in restricted mode until restarted.

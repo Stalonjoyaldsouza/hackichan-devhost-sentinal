@@ -1,0 +1,41 @@
+[project]
+name = "sentinel"
+version = "0.1.0"
+description = "Terminal-first AI security control plane: pre-execution enforcement, data-flow security, outcome verification and control-health watchdog for tool-using AI agents."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic[email]>=2.7,<3",
+    "pyyaml>=6.0,<7",
+]
+
+[project.scripts]
+sentinel = "sentinel.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sentinel"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
