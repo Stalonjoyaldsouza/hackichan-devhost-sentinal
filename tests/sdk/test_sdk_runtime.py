@@ -234,7 +234,7 @@ def sentinel_for(biz):
         if select:
             ws.select([src_id, sink_id])
         write_policy(ws)
-        s = Sentinel(ws)
+        s = Sentinel(ws, heartbeat=False)
         made.append(s)
         return s
 

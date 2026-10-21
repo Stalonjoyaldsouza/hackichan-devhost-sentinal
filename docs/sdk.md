@@ -129,6 +129,53 @@ same run to a non-allowed destination is caught even though each call alone is a
 * No `.sentinel/` workspace → the guard warns on stderr and runs the function unmonitored
   (`SENTINEL_REQUIRE=1` makes that an error instead).
 
+### Let Sentinel add the guards
+
+```bash
+sentinel sdk instrument            # dry run: shows the diff for every SELECTED point
+sentinel sdk instrument --apply    # writes it; originals saved under .sentinel/backups/
+sentinel sdk instrument --revert   # removes exactly the lines Sentinel added
+```
+
+Every added line ends with `# sentinel:auto`. Files are re-parsed before being written and restored
+if anything would break. Python functions and methods only; module-level code and JS/TS are listed
+as "manual".
+
+### Purpose and outcome verification
+
+```python
+from sentinel.sdk import purpose
+
+with purpose(user_message):            # why the agent is acting — the AI agents compare it with
+    agent.run(user_message)            # what the agent actually does (spots injected instructions)
+
+@guard("MP-…", verify=lambda result, order_id, amount: ledger.refunded(order_id) == amount)
+def issue_refund(order_id, amount): ...   # True → VERIFIED, False/str → FAILED, error → INCONCLUSIVE
+```
+
+No `verify` means no outcome claim at all — Sentinel never marks success from the function's own
+return value.
+
+## Running in production
+
+A deployed app keeps its guards; everything below runs **outside** the app so a broken or
+compromised app cannot vouch for itself.
+
+| What | How |
+|---|---|
+| **App heartbeat** | Every guarded app sends a heartbeat every `heartbeat_seconds` (default 10) with policy version, audit and collector health, and the points it has guarded. A clean shutdown writes a stop marker, so a crash is distinguishable from a stop. |
+| **Independent health** | `sentinel sdk health` (exit 0 OK, 1 degraded, 2 critical — use it in cron/CI/alerting) detects: app not reporting, policy missing/invalid/out of date or stale inside the app, guards missing or **removed**, audit trail broken or failing, collector unreachable. |
+| **Live watch** | `sentinel sdk watch` streams events and prints health alerts as they appear and resolve. Add `--ai groq` (or `offline`) to run the threat / risk / audit agents on live traffic; their findings land in the audit trail (`sentinel sdk findings`). |
+| **Safe failure** | `observe`: if Sentinel itself breaks (read-only disk, bad config, internal bug) the app keeps running with one warning. `enforce`: the guarded call fails closed (`SentinelUnavailable`). |
+| **Central audit** | Run `sentinel sdk collector --db central.db` and set `collector_url` in each replica's config (token in `SENTINEL_COLLECTOR_TOKEN`). Replicas write locally first and forward from a persisted cursor, so an outage loses nothing; the collector de-duplicates and keeps its own hash chain. Point `watch`/`health` at the central store with `SENTINEL_AUDIT_PATH`. |
+| **Approvals** | In `enforce` mode, `REQUIRE_APPROVAL` refuses the call and records a pending approval. `sentinel sdk approvals` / `approve ID --as human.owner` / `reject`. The next identical call (same point, function and destination) proceeds once. |
+| **Read-only images** | Run `sentinel sdk policy` at build time so `policy.yaml` ships with the image (it is tracked in git). Without it the guard generates a temporary copy and warns. |
+
+What the AI sees when watching: point titles and categories, function names, decisions, labels,
+purposes and destinations with **e-mail local parts masked** (`a***@evil.example`, also inside free
+text) and URLs reduced to their host — never argument values. Sending requires `--ai groq` plus
+confirmation (`--yes`).
+
 ## Configuration (`.sentinel/config.yaml`)
 
 ```yaml
@@ -139,6 +186,10 @@ allowed_destination_domains: [corp.example]   # sensitive data may only reach th
 approvers: [human.owner]
 point_actions: {MP-1A2B3C4D: REQUIRE_APPROVAL}
 activity_window_hours: 24
+heartbeat_seconds: 10          # 0 disables the app heartbeat
+collector_url: null            # e.g. http://collector.internal:8765 (behind TLS for remote)
+collector_token_env: SENTINEL_COLLECTOR_TOKEN
+audit_path: null               # or $SENTINEL_AUDIT_PATH
 ```
 
 `policy.yaml` is **derived** from this file and the selection (`sentinel sdk policy`); selecting or
@@ -159,6 +210,13 @@ sensitive-labelled data may not reach any selected external/messaging point.
 | `sentinel sdk activity [--run ID] [--all]` | running / failed / completed agent tasks |
 | `sentinel sdk watch [--from-start]` | live view of agent activity and runtime guard events |
 | `sentinel sdk policy` | regenerate `policy.yaml` |
+| `sentinel sdk instrument [IDS…] [--apply] [--revert]` | add/remove guards for selected points (dry run by default) |
+| `sentinel sdk health [--heartbeat-timeout S]` | independent health check; exit 0/1/2 |
+| `sentinel sdk watch [--ai off\|offline\|groq\|auto] [--yes] [--from-start]` | live events + health alerts + optional AI agents |
+| `sentinel sdk findings [--limit N]` | findings from the monitors and AI agents |
+| `sentinel sdk approvals` / `approve ID --as WHO` / `reject ID --as WHO` | human approvals |
+| `sentinel sdk collector --db PATH [--host] [--port] [--allow-remote]` | central audit collector |
+| `sentinel sdk demo [--ai offline\|groq] [--yes] [--keep]` | guided end-to-end demo with pass/fail checks |
 
 Every command takes `--path` (default: current directory, searching upward for `.sentinel/`).
 
@@ -170,17 +228,25 @@ Every command takes `--path` (default: current directory, searching upward for `
 
 ## Limitations
 
-* **Guards are added by you.** The SDK does not rewrite your source; `snippet` shows what to add.
-  Until you do, selected points are not monitored — status says so.
-* **Coverage is what is instrumented.** Calls that bypass a guard are invisible to it.
+* **Coverage is what is instrumented.** Calls that bypass a guard are invisible to it. Health
+  reports selected points without a guard (and guards that disappeared), but it cannot see calls in
+  code nobody analysed or selected.
 * **Static analysis is shallow.** Python is analysed through the AST with import aliases and simple
   `x = Client()` types; cross-module data flow, dynamic dispatch and reflection are not followed.
   JavaScript/TypeScript uses line patterns and is approximate. Other languages are not analysed.
-* **Risk levels are heuristic.** Expect false positives; the tool-exposure and guideline raises
-  deliberately err towards over-reporting.
-* **Offline mode cannot judge.** The triage agent only adjusts risk when a real model is used; the
-  Groq path is covered by unit tests with a fake client and has not been run against the live API.
-* **Data-flow scope.** Taint is per run (`sentinel.run(...)`, default one run per process, which is
-  conservative). Paraphrased/transformed data is not tracked.
-* **One policy engine per process**; approvals for `REQUIRE_APPROVAL` are not implemented in the SDK
-  (the call is refused in enforce mode; use `point_actions` to choose).
+  Auto-instrumentation covers Python functions/methods only.
+* **Risk levels are heuristic.** Expect false positives; raises deliberately over-report.
+* **Offline mode is not AI.** It is keyword matching; the triage agent only adjusts risk with a real
+  model. AI findings are advisory and can be wrong (the AI never blocks anything).
+* **Groq free tier rate-limits.** The provider retries once and falls back to smaller models
+  (`openai/gpt-oss-20b`, `llama-3.3-70b-versatile`; set `SENTINEL_AI_FALLBACK_MODELS`); if every
+  model is limited, the AI step shows `FAILED`/`DEGRADED` and deterministic results continue.
+* **Policy cannot condition on argument values** (e.g. refund amount); `REQUIRE_APPROVAL` applies to
+  every call of a point. Approvals are a local file: anyone who can write `.sentinel/` can approve.
+* **Collector is plain HTTP** with a bearer token; put it behind TLS for anything beyond localhost.
+  It is a single process with a SQLite store (no HA). In-memory spooling (read-only disk) is lost if
+  the process dies before forwarding.
+* **Heartbeats prove the process and Sentinel are alive, not that every code path is exercised.**
+  A point is ACTIVE only after its guard evaluated a call.
+* **Data-flow scope.** Taint is per run (`sentinel.run(...)`, default one run per process).
+  Paraphrased/transformed data is not tracked.

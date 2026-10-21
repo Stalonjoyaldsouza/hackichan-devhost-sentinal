@@ -81,7 +81,9 @@ def test_select_then_status_never_claims_more_than_selected(analysed, capsys):
     assert code == 0 and "not monitored until you add a guard" in out
     _, out, _ = run(capsys, "sdk", "status", "--path", p)
     assert "ACTIVE       0" in out and "IMPLEMENTED  0" in out
-    assert "0 of 19 identified points are actively monitored right now" in out
+    n = len(json.loads(run(capsys, "sdk", "points", "--path", p, "--json")[1]))
+    assert f"0 of {n} identified points are actively monitored right now" in out
+    assert "Coverage: 0 of" in out and "Health:" in out
     assert (analysed / ".sentinel" / "policy.yaml").read_text().startswith("# GENERATED")
 
 
@@ -109,10 +111,11 @@ def test_select_by_short_id_deselect_and_all(analysed, capsys):
 
 
 def test_interactive_selection(analysed, capsys, monkeypatch):
-    answers = iter(["99", "1-2,4", ])
+    n = len(json.loads(run(capsys, "sdk", "points", "--path", str(analysed), "--json")[1]))
+    answers = iter([str(n + 80), "1-2,4"])
     monkeypatch.setattr("builtins.input", lambda _="": next(answers))
     code, out, _ = run(capsys, "sdk", "select", "-i", "--path", str(analysed))
-    assert code == 0 and "outside 1-19" in out and "3 added" in out
+    assert code == 0 and f"outside 1-{n}" in out and "3 added" in out
     answers2 = iter(["q"])
     monkeypatch.setattr("builtins.input", lambda _="": next(answers2))
     _, out, _ = run(capsys, "sdk", "select", "-i", "--path", str(analysed))

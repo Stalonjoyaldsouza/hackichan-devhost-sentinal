@@ -11,3 +11,5 @@ build/
 *.db-wal
 *.db-shm
 var/
+
+examples/**/.sentinel/

@@ -9,7 +9,8 @@ from sentinel.sdk.client import (
     get_default,
     guard,
     monitor,
+    purpose,
 )
 
 __all__ = ["GuardDecision", "Sentinel", "SentinelApprovalRequired", "SentinelDenied",
-           "SentinelUnavailable", "get_default", "guard", "monitor"]
+           "SentinelUnavailable", "get_default", "guard", "monitor", "purpose"]

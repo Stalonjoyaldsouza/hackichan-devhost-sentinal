@@ -130,7 +130,7 @@ def test_model_only_sees_minimal_sanitised_data(make_rt):
     assert "credential" not in blob.lower()
     assert all(set(e) <= {"event_id", "type", "actor", "run_id", "tool", "resource", "destination",
                           "labels", "decision", "reasons", "execution_status", "purpose",
-                          "arguments", "outcome", "discrepancies"}
+                          "arguments", "outcome", "discrepancies", "point", "category"}
                for _, p in prov.payloads for e in p["events"])
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,8 +12,12 @@ from pathlib import Path
 from sentinel.ai import make_provider
 from sentinel.ai.providers import OfflineHeuristicProvider
 from sentinel.audit import AuditStore
+from sentinel.contracts import Decision, EventType, SecurityEvent
 from sentinel.sdk.activity import ActivityTracker, latest_run_id, read_tasks
 from sentinel.sdk.agents import AnalysisError, run_analysis
+from sentinel.sdk.approvals import ApprovalError, ApprovalFile
+from sentinel.sdk.health import Level, evaluate_health
+from sentinel.sdk.instrument import apply_plan, plan_instrumentation, revert
 from sentinel.sdk.lifecycle import compute_status
 from sentinel.sdk.models import (
     RISK_ORDER,
@@ -22,11 +27,12 @@ from sentinel.sdk.models import (
     PointState,
     Risk,
 )
+from sentinel.sdk.monitor import StreamMonitor
 from sentinel.sdk.policygen import write_policy
 from sentinel.sdk.scanner import is_sentinel_itself
+from sentinel.sdk.watchloop import watch_project
 from sentinel.sdk.workspace import Workspace, WorkspaceError, find_workspace
 from sentinel.termlog import BOLD, CYAN, DIM, GREEN, RED, YELLOW, Style, TerminalLog
-from sentinel.watch import watch
 
 STATE_COLOR = {PointState.IDENTIFIED: DIM, PointState.SELECTED: YELLOW,
                PointState.IMPLEMENTED: CYAN, PointState.ACTIVE: GREEN}
@@ -148,12 +154,17 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _confirm_egress(provider, args: argparse.Namespace, st: Style) -> None:
+WHAT_ANALYZE = ("redacted code excerpts (file names, detected operations, short snippets, dependency "
+                "names, README start) and your guideline text")
+WHAT_WATCH = ("runtime guard events (point titles and categories, function names, decisions, "
+              "labels, purposes, masked destinations — never argument values)")
+
+
+def _confirm_egress(provider, args: argparse.Namespace, st: Style, what: str = WHAT_ANALYZE) -> None:
     if isinstance(provider, OfflineHeuristicProvider):
         return
-    print(st(f"! AI mode '{provider.name}': redacted code excerpts (file names, detected operations,"
-             " short snippets, dependency names, README start) and your guideline text will be "
-             "SENT to the model provider. Secret-looking files are never read.", YELLOW))
+    print(st(f"! AI mode '{provider.name}': {what} will be SENT to the model provider. "
+             "Secret-looking files are never read.", YELLOW))
     if args.yes:
         return
     if sys.stdin.isatty() and input("Continue? [y/N] ").strip().lower() in {"y", "yes"}:
@@ -367,6 +378,16 @@ def cmd_status(args: argparse.Namespace) -> int:
                 print(st(f"   {p.point_id}: {note}", DIM))
     active = len(by_state[PointState.ACTIVE])
     print(f"\n{active} of {len(analysis.points)} identified points are actively monitored right now.")
+    sel = set(ws.load_selected())
+    guarded = sum(1 for pid in sel if rep.points.get(pid) and rep.points[pid].code_refs)
+    print(f"Coverage: {guarded} of {len(sel)} selected points have a guard in the code.")
+    health = evaluate_health(ws, analysis=analysis)
+    print(f"Health: {health.level.name} — `sentinel sdk health` for details")
+    findings = _recent_findings(ws, 5)
+    if findings:
+        print(st(f"Latest findings ({len(findings)} shown — `sentinel sdk findings`):", BOLD))
+        for ev in findings:
+            print(f"  {ev.metadata.get('severity'):<8} {str(ev.metadata.get('summary'))[:110]}")
     for pid, where in rep.orphan_refs.items():
         print(st(f"! guard for unknown point {pid} at {', '.join(where)} (re-run analyze?)", YELLOW))
     print(st(LEGEND, DIM))
@@ -442,8 +463,182 @@ def cmd_policy(args: argparse.Namespace) -> int:
 
 def cmd_watch(args: argparse.Namespace) -> int:
     ws = _workspace(args)
-    return watch(ws.audit_path, TerminalLog(color=False if args.no_color else None, verbose=args.verbose),
-                 interval=args.interval, heartbeat_timeout=1e9, from_start=args.from_start)
+    st = _style(args)
+    provider = None
+    if args.ai != "off":
+        try:
+            provider = make_provider(args.ai)
+        except ValueError as exc:
+            raise CliError(str(exc)) from exc
+        _confirm_egress(provider, args, st, WHAT_WATCH)
+    try:
+        analysis = ws.load_analysis()
+    except WorkspaceError:
+        analysis = None
+    monitor = StreamMonitor(ws, analysis, provider)
+    log = TerminalLog(color=False if args.no_color else None, verbose=args.verbose)
+    return watch_project(ws, log, interval=args.interval, health_interval=args.health_interval,
+                         from_start=args.from_start, monitor=monitor)
+
+
+def cmd_health(args: argparse.Namespace) -> int:
+    ws, st = _workspace(args), _style(args)
+    rep = evaluate_health(ws, heartbeat_timeout=args.heartbeat_timeout)
+    color = {Level.OK: GREEN, Level.INFO: DIM, Level.DEGRADED: YELLOW, Level.CRITICAL: RED}
+    print(st(f"Health — {ws.project_root.name}: {rep.level.name}", BOLD, color[rep.level]))
+    for it in sorted(rep.items, key=lambda i: -i.level):
+        print(f"  {st(f'{it.level.name:<9}', color[it.level])} {it.code:<24} {it.detail}")
+    if not rep.items:
+        print("  no checks produced a result")
+    return rep.exit_code
+
+
+def _recent_findings(ws: Workspace, limit: int = 20):
+    if not ws.audit_path.exists():
+        return []
+    store = AuditStore(ws.audit_path, read_only=True)
+    try:
+        rows = [s.event for s in store.recent([EventType.FINDING.value], "1970-01-01T00:00:00")]
+    except ValueError:
+        rows = []
+    finally:
+        store.close()
+    return rows[-limit:]
+
+
+def cmd_findings(args: argparse.Namespace) -> int:
+    ws, st = _workspace(args), _style(args)
+    rows = _recent_findings(ws, args.limit)
+    if not rows:
+        print("no findings recorded (run the app, then `sentinel sdk watch [--ai groq]`)")
+        return 0
+    for ev in rows:
+        md = ev.metadata
+        sev = str(md.get("severity"))
+        color = RED if sev in {"HIGH", "CRITICAL"} else YELLOW
+        src = f" [AI:{md['source']}]" if md.get("source") else ""
+        print(f"{ev.timestamp:%H:%M:%S} {st(f'{sev:<8}', BOLD, color)} {md.get('component'):<18} "
+              f"{md.get('summary')}{st(src, CYAN)}")
+        print(st(f"           → {md.get('recommended_action')}", DIM))
+    return 0
+
+
+def _approver(args: argparse.Namespace, ws: Workspace) -> str:
+    who = getattr(args, "as_approver", None) or os.environ.get("SENTINEL_APPROVER")
+    if not who:
+        raise CliError(f"say who is approving: --as <id> or $SENTINEL_APPROVER "
+                       f"(allowed: {', '.join(ws.load_config().approvers)})")
+    return who
+
+
+def cmd_approvals(args: argparse.Namespace) -> int:
+    ws, st = _workspace(args), _style(args)
+    items = ApprovalFile(ws.approvals_path).list()
+    if not items:
+        print("no approvals recorded")
+        return 0
+    for a in items:
+        color = {"PENDING": YELLOW, "GRANTED": GREEN, "REJECTED": RED}.get(a["state"], DIM)
+        print(f"{a['approval_id']}  {st(f'{a['state']:<9}', color)} {a['point_id']}  "
+              f"{a['function']}  dest={a['destination'] or '-'}  expires {a['expires_at'][11:19]}Z")
+    return 0
+
+
+def _decide(args: argparse.Namespace, grant: bool) -> int:
+    ws = _workspace(args)
+    who, cfg = _approver(args, ws), ws.load_config()
+    try:
+        a = ApprovalFile(ws.approvals_path).decide(args.approval_id, who, cfg.approvers, grant)
+    except ApprovalError as exc:
+        raise CliError(f"{exc.code}: {exc}") from exc
+    store = AuditStore(ws.audit_path)
+    try:
+        store.append(SecurityEvent(
+            trace_id=a["approval_id"], actor_id=who, parent_actor_id=a["requester"],
+            event_type=EventType.APPROVAL_GRANTED if grant else EventType.APPROVAL_REJECTED,
+            tool_name="mp." + a["point_id"][3:].lower(), policy_decision=Decision.REQUIRE_APPROVAL,
+            metadata={"point_id": a["point_id"], "approval_id": a["approval_id"],
+                      "function": a["function"], "destination": a["destination"]}))
+    finally:
+        store.close()
+    print(f"{'Approved' if grant else 'Rejected'} {a['approval_id']} ({a['point_id']} "
+          f"{a['function']} → {a['destination'] or '-'})"
+          + ("; the application's next identical call will proceed once." if grant else "."))
+    return 0
+
+
+def cmd_approve(args: argparse.Namespace) -> int:
+    return _decide(args, True)
+
+
+def cmd_reject(args: argparse.Namespace) -> int:
+    return _decide(args, False)
+
+
+def cmd_instrument(args: argparse.Namespace) -> int:
+    ws, st = _workspace(args), _style(args)
+    if args.revert:
+        changed = revert(ws)
+        print(f"removed Sentinel-added lines from {len(changed)} file(s): {', '.join(changed) or '-'}")
+        return 0
+    analysis = _analysis(ws)
+    ids = resolve_ids(analysis, args.points) if args.points else None
+    plan = plan_instrumentation(ws, analysis, ids)
+    if not ws.load_selected() and not ids:
+        raise CliError("no points selected — run `sentinel sdk select` first (or name point ids)")
+    print(plan.diff() or "(no changes)")
+    for pid, why in plan.manual:
+        print(st(f"  manual  {pid}: {why}", YELLOW))
+    if plan.already:
+        print(st(f"  already guarded: {', '.join(plan.already)}", DIM))
+    if not plan.files:
+        return 0
+    n = sum(len(f.points) for f in plan.files)
+    if not args.apply:
+        print(st(f"\nDry run: {n} guard(s) in {len(plan.files)} file(s). Re-run with --apply to write "
+                 "them (originals are backed up; undo with --revert).", BOLD))
+        return 0
+    backup = apply_plan(ws, plan)
+    print(st(f"\nApplied {n} guard(s) in {len(plan.files)} file(s). Backup: {backup}", GREEN))
+    print("Selected points are now IMPLEMENTED; they become ACTIVE once the app runs and a guard "
+          "evaluates a call.")
+    return 0
+
+
+def cmd_demo(args: argparse.Namespace) -> int:
+    from sentinel.sdk.demo import run_demo
+
+    st = _style(args)
+    if args.ai != "offline":
+        try:
+            provider = make_provider(args.ai)
+        except ValueError as exc:
+            raise CliError(str(exc)) from exc
+        assert provider is not None
+        _confirm_egress(provider, args, st, WHAT_ANALYZE + "; then runtime guard events")
+    return run_demo(args.ai, keep=args.keep, yes=True, color=st.enabled)
+
+
+def cmd_collector(args: argparse.Namespace) -> int:
+    from sentinel.sdk.collector import CollectorConfigError, make_server
+
+    token = os.environ.get(args.token_env) or None
+    try:
+        srv = make_server(args.db, args.host, args.port, token, allow_remote=args.allow_remote)
+    except CollectorConfigError as exc:
+        raise CliError(str(exc)) from exc
+    host, port = srv.server_address[:2]
+    print(f"collector listening on http://{host}:{port}  db={args.db}  "
+          f"auth={'bearer token' if token else 'none (loopback only)'}")
+    print("point apps at it with `collector_url:` in .sentinel/config.yaml; Ctrl-C to stop")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("stopped")
+    finally:
+        srv.server_close()
+        srv.sentinel_store.close()  # type: ignore[attr-defined]
+    return 0
 
 
 # ---- wiring ---------------------------------------------------------------------------------
@@ -497,10 +692,49 @@ def register(sub: argparse._SubParsersAction) -> None:
     add("snippet", cmd_snippet, "code to add a guard for a point").add_argument("point")
     add("policy", cmd_policy, "regenerate .sentinel/policy.yaml from selection + config")
 
-    w = add("watch", cmd_watch, "live-tail the project's audit trail (agent activity + runtime guards)")
+    w = add("watch", cmd_watch, "live view: agent activity, runtime guards, health alerts, AI findings")
     w.add_argument("--interval", type=float, default=1.0)
+    w.add_argument("--health-interval", type=float, default=10.0)
     w.add_argument("--from-start", action="store_true")
+    w.add_argument("--ai", choices=["off", "offline", "groq", "auto"], default="off",
+                   help="run the advisory threat/risk/audit agents on the live guard events")
+    w.add_argument("--yes", "-y", action="store_true", help="confirm sending events to the provider")
 
+    h = add("health", cmd_health, "independent health check (exit 0 ok, 1 degraded, 2 critical)")
+    h.add_argument("--heartbeat-timeout", type=float, default=None,
+                   help="seconds without a heartbeat before the app counts as down "
+                        "(default: max(30, 3 x heartbeat interval))")
+    h.set_defaults(func=_wrap(cmd_health))
+
+    add("findings", cmd_findings, "recent findings from the monitors and AI agents").add_argument(
+        "--limit", type=int, default=20)
+
+    add("approvals", cmd_approvals, "list approval requests")
+    for name, fn, text in (("approve", cmd_approve, "approve a pending request (single use)"),
+                           ("reject", cmd_reject, "reject a pending request")):
+        ap = add(name, fn, text)
+        ap.add_argument("approval_id")
+        ap.add_argument("--as", dest="as_approver", metavar="APPROVER",
+                        help="your approver id (must be in config.approvers; or $SENTINEL_APPROVER)")
+
+    dm = add("demo", cmd_demo, "guided end-to-end demo on the bundled example app")
+    dm.add_argument("--ai", choices=["offline", "groq", "auto"], default="offline")
+    dm.add_argument("--yes", "-y", action="store_true", help="confirm sending excerpts to the provider")
+    dm.add_argument("--keep", action="store_true", help="keep the temporary project")
+
+    ins = add("instrument", cmd_instrument, "add guards to the selected points (dry run by default)")
+    ins.add_argument("points", nargs="*")
+    ins.add_argument("--apply", action="store_true", help="write the changes (originals are backed up)")
+    ins.add_argument("--revert", action="store_true", help="remove every line Sentinel added")
+
+    col = ssub.add_parser("collector", help="run the central audit collector (replicas forward here)")
+    col.add_argument("--db", required=True, help="central audit store to write")
+    col.add_argument("--host", default="127.0.0.1")
+    col.add_argument("--port", type=int, default=8765)
+    col.add_argument("--token-env", default="SENTINEL_COLLECTOR_TOKEN")  # noqa: S106
+    col.add_argument("--allow-remote", action="store_true",
+                     help="allow a non-loopback bind (put a TLS proxy in front; token required)")
+    col.set_defaults(func=_wrap(cmd_collector))
 
 def _wrap(func):
     def run(args: argparse.Namespace) -> int:

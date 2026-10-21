@@ -16,7 +16,7 @@ import json
 import re
 import sqlite3
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +26,9 @@ from sentinel.contracts import EventType, SecurityEvent
 GENESIS = "0" * 64
 _SECRET_KEY = re.compile(r"(pass(word)?|secret|token|api[_-]?key|credential|authorization|ssn)", re.I)
 _MAX_STR = 200
+# Human-readable text Sentinel itself writes (finding summaries, health details) may be longer.
+_LONG_TEXT_KEYS = frozenset({"summary", "recommended_action", "detail"})
+_MAX_LONG = 600
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -58,7 +61,10 @@ def sanitize(value: Any) -> Any:
     """Redact secret-looking keys and bound long strings (store a hash instead of the payload)."""
     if isinstance(value, dict):
         return {
-            k: "[REDACTED]" if _SECRET_KEY.search(str(k)) else sanitize(v) for k, v in value.items()
+            k: "[REDACTED]" if _SECRET_KEY.search(str(k))
+            else (v if isinstance(v, str) and k in _LONG_TEXT_KEYS and len(v) <= _MAX_LONG
+                  else sanitize(v))
+            for k, v in value.items()
         }
     if isinstance(value, list | tuple):
         return [sanitize(v) for v in value]
@@ -188,6 +194,35 @@ class AuditStore:
             sql += " AND synthetic=0"
         with self._lock:
             return int(self._conn.execute(sql, tuple(params)).fetchone()[0])
+
+    def recent(self, event_types: Sequence[str], since_iso: str, limit: int = 20000) -> list[StoredEvent]:
+        """Events of the given types at or after `since_iso` (UTC ISO-8601), oldest first."""
+        marks = ",".join("?" for _ in event_types)
+        return list(self._rows(  # only "?" placeholders are interpolated; all values are bound
+            f"SELECT seq, body, hash FROM events WHERE event_type IN ({marks}) AND timestamp >= ? "  # noqa: S608
+            "ORDER BY seq DESC LIMIT ?", (*event_types, since_iso, limit)))[::-1]
+
+    def verify_from(self, seq: int = 0, prev_hash: str = GENESIS) -> tuple[ChainReport, int, str]:
+        """Verify only rows after `seq`, chaining from `prev_hash`. Returns (report, last_seq, last_hash)
+        so a long-running watcher can verify incrementally. Use `verify_chain()` for a full scan."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT seq, event_id, body, prev_hash, hash FROM events WHERE seq > ? ORDER BY seq",
+                (seq,)).fetchall()
+        last_seq, last_hash = seq, prev_hash
+        for s_, event_id, body, stored_prev, stored_hash in rows:
+            if stored_prev != last_hash:
+                return ChainReport(False, s_, s_, f"broken link at seq {s_}"), last_seq, last_hash
+            if _chain_hash(last_hash, body) != stored_hash:
+                return ChainReport(False, s_, s_, f"hash mismatch at seq {s_}"), last_seq, last_hash
+            try:
+                if SecurityEvent.model_validate_json(body).event_id != event_id:
+                    return ChainReport(False, s_, s_, f"event_id column altered at seq {s_}"), \
+                        last_seq, last_hash
+            except ValueError:
+                return ChainReport(False, s_, s_, f"unparseable body at seq {s_}"), last_seq, last_hash
+            last_seq, last_hash = s_, stored_hash
+        return ChainReport(True, len(rows)), last_seq, last_hash
 
     def head(self) -> tuple[int, str]:
         with self._lock:

@@ -43,16 +43,23 @@ def build_policy(cfg: Config, selected: list[str], categories: dict[str, str]) -
             "approval_ttl_seconds": 900, "tools": tools, "rules": rules}
 
 
-def write_policy(ws: Workspace) -> tuple[int, int]:
-    """(Re)write policy.yaml. Returns (selected points, rules)."""
+def render_policy(ws: Workspace) -> tuple[str, int, int]:
+    """The policy text for the current selection + config: (text, selected points, rules)."""
     cfg = ws.load_config()
     selected = sorted(ws.load_selected())
     categories: dict[str, str] = {}
     if ws.analysis_path.exists():
         categories = {p.point_id: p.category.value for p in ws.load_analysis().points}
     policy = build_policy(cfg, selected, categories)
-    ws.dir.mkdir(parents=True, exist_ok=True)
-    tmp = ws.policy_path.with_suffix(".tmp")
-    tmp.write_text(HEADER + yaml.safe_dump(policy, sort_keys=False))
-    tmp.replace(ws.policy_path)  # atomic: a running app never sees a half-written policy
-    return len(selected), len(policy["rules"])
+    return HEADER + yaml.safe_dump(policy, sort_keys=False), len(selected), len(policy["rules"])
+
+
+def write_policy(ws: Workspace, path=None) -> tuple[int, int]:
+    """(Re)write policy.yaml (or `path`). Returns (selected points, rules)."""
+    text, n, rules = render_policy(ws)
+    target = path or ws.policy_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(text)
+    tmp.replace(target)  # atomic: a running app never sees a half-written policy
+    return n, rules
