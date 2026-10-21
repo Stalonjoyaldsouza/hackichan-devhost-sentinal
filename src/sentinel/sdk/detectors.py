@@ -12,7 +12,15 @@ import ast
 import re
 from dataclasses import dataclass, field
 
-from sentinel.sdk.models import Category, Location, MonitoringPoint, Risk, bump, make_point_id
+from sentinel.sdk.models import (
+    RISK_ORDER,
+    Category,
+    Location,
+    MonitoringPoint,
+    Risk,
+    bump,
+    make_point_id,
+)
 from sentinel.sdk.scanner import SourceFile, redact
 
 SENSITIVE_WORDS = re.compile(
@@ -209,7 +217,7 @@ class _PyVisitor(ast.NodeVisitor):
                 and SENSITIVE_WORDS.search(low):
             self.stack.append(node.name)
             self.args_stack.append([a.arg for a in node.args.args if a.arg != "self"])
-            self.add(node, Category.SENSITIVE_DATA, "sensitive_function", Risk.MEDIUM,
+            self.add(node, Category.SENSITIVE_DATA, "sensitive_data", Risk.MEDIUM,
                      f"Sensitive data accessor '{node.name}'",
                      "Function name indicates it reads personal, financial or credential data.",
                      "Data it returns should be tracked so it cannot flow to unapproved outputs.")
@@ -271,7 +279,7 @@ class _PyVisitor(ast.NodeVisitor):
         # messaging
         elif last in MESSAGING_METHODS or full in MESSAGING_CTORS or \
                 any(full.endswith(c) for c in MESSAGING_CTORS):
-            self.add(node, Category.MESSAGING, f"messaging.{last}", Risk.HIGH,
+            self.add(node, Category.MESSAGING, "messaging", Risk.HIGH,
                      f"Sends a message ({last})",
                      "Delivers content to people or channels outside the application.",
                      "Outbound messages are a direct data-exfiltration and spam channel.")
@@ -293,7 +301,7 @@ class _PyVisitor(ast.NodeVisitor):
                      "Data changes and dynamic queries need an audit trail.")
             m = re.search(r"\b(from|into|update|join)\s+([A-Za-z_][\w.]*)", text, re.I)
             if m and SENSITIVE_WORDS.search(m.group(2)):
-                self.add(node, Category.SENSITIVE_DATA, "sensitive_table", Risk.HIGH,
+                self.add(node, Category.SENSITIVE_DATA, "sensitive_data", Risk.HIGH,
                          f"Reads/writes sensitive table '{m.group(2)}'",
                          "SQL touches a table whose name indicates personal or credential data.",
                          "Sensitive records must not reach unapproved destinations.")
@@ -319,7 +327,7 @@ class _PyVisitor(ast.NodeVisitor):
                          "Reads a .env file", "Loads secrets from a .env file.",
                          "Secrets must not be reachable from model-driven code.")
             elif path and SENSITIVE_WORDS.search(path):
-                self.add(node, Category.SENSITIVE_DATA, "sensitive_file", Risk.HIGH,
+                self.add(node, Category.SENSITIVE_DATA, "sensitive_data", Risk.HIGH,
                          "Opens a file with a sensitive-looking name",
                          "Path suggests personal, financial or credential data.",
                          "Sensitive data must not reach unapproved outputs.")
@@ -443,6 +451,9 @@ def analyse_files(files: list[SourceFile]) -> tuple[list[MonitoringPoint], list[
             p = merged[pid]
             if len(p.locations) < 10 and all(x.line != c.line for x in p.locations):
                 p.locations.append(loc)
+            if RISK_ORDER.index(risk) > RISK_ORDER.index(p.risk):   # keep the worst finding
+                p.risk = risk
+                p.static_risk = max(p.static_risk, c.risk, key=RISK_ORDER.index)
             continue
         notes = [f"raised one level: reachable by an LLM as tool '{exposed}'"] if exposed else []
         merged[pid] = MonitoringPoint(

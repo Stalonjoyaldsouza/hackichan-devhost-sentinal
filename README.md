@@ -12,9 +12,9 @@ Sentinel helps you secure applications that use AI agents. It has two parts that
 
 Everything is shown in the terminal. AI models only **advise**; deterministic code decides.
 
-> Status: hackathon MVP. The SDK analyses real projects, but the control-plane demo uses scripted
-> agents and in-memory mock tools. Model calls to Groq are unit-tested against a fake client and
-> have not been run against the live API here. See [Limitations](#limitations).
+> Status: hackathon MVP. The SDK analyses real projects and guards them at runtime; the bundled demos
+> use a scripted agent with patched tools. The Groq integration has been run live against the
+> example app. See [Limitations](#limitations).
 
 ## Install
 
@@ -46,7 +46,13 @@ sentinel sdk status                                      # IDENTIFIED → SELECT
 sentinel sdk activity                                    # what each SDK agent did / is doing
 ```
 
-Try it on the bundled example (a deliberately unsafe support bot) without leaving this repo:
+**See everything in one command** (guided demo with pass/fail checks — script in [docs/DEMO.md](docs/DEMO.md)):
+
+```bash
+uv run sentinel sdk demo
+```
+
+Or try it on the bundled example (a deliberately unsafe support bot) step by step:
 
 ```bash
 cd examples/support_bot
@@ -80,7 +86,8 @@ policy.
 | ACTIVE | the guard was **observed evaluating a call at runtime** (audit trail, hash chain verified) |
 
 Selecting a point does not monitor it, and pasting a decorator does not make it ACTIVE. The SDK
-never edits your source; `sdk snippet` shows what to add:
+edits your source only when you ask: `sdk instrument` shows a diff and `--apply` writes it (reversible
+with `--revert`), or add guards yourself — `sdk snippet` shows the code:
 
 ```python
 from sentinel.sdk import guard
@@ -92,9 +99,18 @@ def send_email(to, subject, body): ...
 def get_customer_records(): ...
 ```
 
-In `observe` mode (default) the guard only logs and reports what it *would* block. In `enforce` mode
-a denied call raises `SentinelDenied` before your function runs, and an unavailable policy or audit
-store fails closed. Configuration lives in `.sentinel/config.yaml`.
+In `observe` mode (default) the guard only logs and reports what it *would* block, and a problem in
+Sentinel itself never stops your app. In `enforce` mode a denied call raises `SentinelDenied` before
+your function runs, and an unavailable policy or audit store fails closed. Configuration lives in
+`.sentinel/config.yaml`.
+
+### Once deployed
+
+The guards keep working in production, and Sentinel watches them from **outside** the app:
+each app sends a heartbeat; `sentinel sdk health` / `watch` alert when the app goes silent, a guard
+is removed, the policy drifts or the audit trail breaks; `watch --ai groq` runs the threat, risk and
+audit agents on live traffic (destinations masked); replicas can forward to a central collector so a
+redeploy loses nothing. Details: [docs/sdk.md → Running in production](docs/sdk.md#running-in-production).
 
 ### SDK commands
 
@@ -109,6 +125,13 @@ store fails closed. Configuration lives in `.sentinel/config.yaml`.
 | `sentinel sdk activity [--run ID] [--all]` | running / failed / completed agent tasks |
 | `sentinel sdk watch` | live view of agent activity and runtime guard events |
 | `sentinel sdk policy` | regenerate `.sentinel/policy.yaml` from selection + config |
+| `sentinel sdk instrument [--apply] [--revert]` | add the guards for you (dry-run diff first; reversible) |
+| `sentinel sdk health` | independent health check of the deployed app (exit 0 ok / 1 degraded / 2 critical) |
+| `sentinel sdk watch [--ai groq]` | live events, health alerts, and AI agents watching production traffic |
+| `sentinel sdk findings` | what the monitors and AI agents reported |
+| `sentinel sdk approvals` / `approve` / `reject` | human approvals for risky actions |
+| `sentinel sdk collector --db central.db` | central audit store for many replicas |
+| `sentinel sdk demo [--ai groq --yes]` | the guided end-to-end demo |
 
 Every command accepts `--path DIR` (default: the current directory, searching upward for
 `.sentinel/`). Sentinel refuses to analyse its own source tree.
@@ -203,25 +226,29 @@ Layout: `src/sentinel/` (control plane), `src/sentinel/sdk/` (analysis agents, r
 [docs/architecture.md](docs/architecture.md), [docs/decisions.md](docs/decisions.md).
 
 Environment variables (see `.env.example`): `GROQ_API_KEY`, `SENTINEL_AI`, `SENTINEL_AI_MODEL`,
-`SENTINEL_PROJECT` (workspace lookup), `SENTINEL_REQUIRE=1` (guards error instead of running
-unmonitored when no `.sentinel/` exists), `NO_COLOR`.
+`SENTINEL_AI_FALLBACK_MODELS`, `SENTINEL_PROJECT` (workspace lookup), `SENTINEL_AUDIT_PATH`,
+`SENTINEL_COLLECTOR_TOKEN`, `SENTINEL_HEARTBEAT=0`, `SENTINEL_APPROVER`, `SENTINEL_REQUIRE=1`
+(guards error instead of running unmonitored when Sentinel cannot start), `NO_COLOR`.
 
 ## Limitations
 
 These are deliberate MVP boundaries. Do not present them as solved.
 
 **SDK**
-- **You add the guards.** The SDK does not rewrite your code; until you do, selected points are not
-  monitored (status says so). Calls that bypass a guard are invisible to it.
+- **Coverage is what is instrumented.** `instrument` adds guards for selected Python functions; other
+  places need manual guards. Calls that bypass a guard are invisible to it (health reports missing
+  and removed guards, not unknown code paths).
 - **Static analysis is shallow.** Python uses the AST with import aliases and simple variable types;
   cross-module data flow, dynamic dispatch and reflection are not followed. JS/TS is line-pattern
   based and approximate. Other languages are not analysed. Risk levels are heuristic and err towards
   over-reporting.
-- **Offline mode cannot judge.** The triage agent adjusts risk only with a real model; the Groq path
-  has only been tested against a fake client.
+- **Offline mode is keyword matching, not AI.** With Groq the agents were verified live on the
+  example app; the free tier rate-limits, which the provider handles by retrying and falling back to
+  smaller models. AI findings are advisory and can be wrong.
 - **Data-flow scope.** Taint is per run (`sentinel.run(...)`; default one run per process, which is
   conservative). Paraphrased content is not tracked.
-- **No approval workflow in the SDK:** `REQUIRE_APPROVAL` is refused in enforce mode.
+- **Approvals are a local file** (anyone who can write `.sentinel/` can approve) and policy cannot
+  condition on argument values. The collector is plain HTTP (use TLS in front) and single-node.
 
 **Control plane**
 - **Same-process isolation.** Gateway and agents share a Python process; a hostile agent with

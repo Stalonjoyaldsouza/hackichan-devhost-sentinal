@@ -28,6 +28,8 @@ packages = ["src/sentinel"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "policies/default.yaml" = "sentinel/data/default.yaml"
+"examples/support_bot" = "sentinel/data/examples/support_bot"
+"examples/guidelines" = "sentinel/data/examples/guidelines"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

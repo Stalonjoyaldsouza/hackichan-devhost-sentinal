@@ -37,6 +37,10 @@ class Config(BaseModel):
     approvers: list[str] = Field(default_factory=lambda: ["human.owner"], min_length=1)
     point_actions: dict[str, str] = Field(default_factory=dict)
     activity_window_hours: float = Field(default=24.0, gt=0)
+    heartbeat_seconds: float = Field(default=10.0, ge=0)          # 0 disables the app heartbeat
+    audit_path: str | None = None                                  # override; or $SENTINEL_AUDIT_PATH
+    collector_url: str | None = None                               # central collector (optional)
+    collector_token_env: str = "SENTINEL_COLLECTOR_TOKEN"  # noqa: S105 — env var NAME, not a secret
 
     def validate_actions(self) -> None:
         bad = {k: v for k, v in self.point_actions.items()
@@ -71,7 +75,22 @@ class Workspace:
 
     @property
     def audit_path(self) -> Path:
-        return self.dir / "audit.db"
+        override = os.environ.get("SENTINEL_AUDIT_PATH")
+        if override:
+            return Path(override)
+        try:  # config override, resolved relative to the project root
+            configured = self.load_config().audit_path
+        except WorkspaceError:
+            configured = None
+        return (self.project_root / configured) if configured else self.dir / "audit.db"
+
+    @property
+    def approvals_path(self) -> Path:
+        return self.dir / "approvals.json"
+
+    @property
+    def spool_cursor_path(self) -> Path:
+        return self.dir / "spool.cursor"
 
     def exists(self) -> bool:
         return self.config_path.exists()
@@ -87,8 +106,10 @@ class Workspace:
             "# Sentinel SDK configuration — edit freely.\n"
             "# mode: observe = log and report would-be blocks; enforce = raise on DENY.\n"
             + yaml.safe_dump(cfg.model_dump(), sort_keys=False))
+        # runtime state is ignored; policy.yaml is deliberately tracked (reviewable, deployable)
         (self.dir / ".gitignore").write_text(
-            "audit.db\naudit.db-wal\naudit.db-shm\npolicy.yaml\n")  # runtime/derived artefacts
+            "audit.db\naudit.db-wal\naudit.db-shm\napprovals.json\napprovals.json.lock\n"
+            "spool.cursor\n")
         return True
 
     # ---- config ----------------------------------------------------------------------------

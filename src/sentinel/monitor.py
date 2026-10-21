@@ -56,11 +56,13 @@ class Monitor:
         if ev.event_type is EventType.POLICY_DECISION and ev.policy_decision is Decision.DENY \
                 and not ev.synthetic:
             if DATAFLOW_REASONS & set(ev.reason_codes):
+                observe = ev.metadata.get("mode") == "observe"
+                outcome = ("flagged but NOT blocked (observe mode)" if observe else "blocked")
                 out.append(Finding(
                     component="sequence_dataflow", severity=Severity.HIGH,
                     summary=f"{ev.actor_id} attempted to move labelled data "
                             f"{[lbl.value for lbl in ev.data_labels]} to {ev.destination} "
-                            f"via {ev.tool_name}; blocked",
+                            f"via {ev.tool_name}; {outcome}",
                     evidence_event_ids=(ev.event_id, *ev.evidence_refs), confidence=1.0,
                     recommended_action="Review the agent's task and the source documents; "
                                        "consider revoking the agent's access to labelled data.",
