@@ -18,7 +18,7 @@ export GROQ_API_KEY=your-key
 uv run sentinel sdk demo --ai groq --yes
 ```
 
-It ends with `Result: 20/20 checks passed`. What the audience sees, step by step:
+It ends with `Result: 23/23 checks passed`. What the audience sees, step by step:
 
 | # | Step | The point to make |
 |---|---|---|
@@ -30,6 +30,7 @@ It ends with `Result: 20/20 checks passed`. What the audience sees, step by step
 | 6 | Switch to **enforce** | The same attack is refused *before* the email is sent; the legitimate internal email still works. |
 | 7 | High-value refund | Held for human approval → `approve` → proceeds once → asking again needs a new approval. |
 | 8 | Failure drills | `kill -9` the app → `health` says APP_NOT_REPORTING (critical). Change config without regenerating policy → POLICY_OUT_OF_DATE. Remove the guards → GUARD_REMOVED (critical). The audit chain verifies throughout. |
+| 9 | Recovery | Guards restored, app restarted → the crash is recorded as replaced by a new process, no critical findings remain, points are ACTIVE again. |
 
 ## Doing it by hand (two terminals)
 

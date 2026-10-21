@@ -122,15 +122,37 @@ def evaluate_health(ws: Workspace, *, now: datetime | None = None, heartbeat_tim
 
     # ---- application heartbeats ----------------------------------------------------------------
     latest: dict[tuple[str, int], tuple[datetime, dict[str, Any]]] = {}
+    first: dict[tuple[str, int], datetime] = {}
     for s in recent_hb:
         md = s.event.metadata
         if md.get("kind") == "app_heartbeat":
-            latest[(md.get("host", "?"), md.get("pid", 0))] = (s.event.timestamp, md)
+            key = (md.get("host", "?"), md.get("pid", 0))
+            latest[key] = (s.event.timestamp, md)
+            first.setdefault(key, s.event.timestamp)
     alive = {k: v for k, v in latest.items()
              if not v[1].get("stopping") and (now - v[0]).total_seconds() <= timeout}
     stopped = {k: v for k, v in latest.items() if v[1].get("stopping")}
-    dead = {k: v for k, v in latest.items()
-            if not v[1].get("stopping") and (now - v[0]).total_seconds() > timeout}
+    silent = {k: v for k, v in latest.items()
+              if not v[1].get("stopping") and (now - v[0]).total_seconds() > timeout}
+
+    def replaced(key: tuple[str, int], last_seen: datetime, app: Any) -> bool:
+        """A NEW process of the same app started after this one went silent (a restart).
+        Replicas that were already running do not count, so a lost replica is still reported."""
+        return any(first[k] > last_seen and latest[k][1].get("app") == app
+                   for k in latest if k != key)
+
+    restarted = {k: v for k, v in silent.items() if replaced(k, v[0], v[1].get("app"))}
+    # A process inside the timeout window that has missed 3+ of its heartbeats AND been superseded by
+    # a newer process of the same app is a crash already followed by a restart, not a live process.
+    missed = 3 * (cfg.heartbeat_seconds or 10.0)
+    for k, v in list(alive.items()):
+        if (now - v[0]).total_seconds() > missed and replaced(k, v[0], v[1].get("app")):
+            restarted[k] = alive.pop(k)
+    dead = {k: v for k, v in silent.items() if k not in restarted}
+    for (host, pid), (_ts, md) in restarted.items():
+        add(Level.INFO, "APP_RESTARTED_AFTER_CRASH",
+            f"{md.get('app')}@{host} pid {pid} stopped without a shutdown marker and was replaced by "
+            "a newer process")
     if alive:
         add(Level.OK, "APP_ALIVE", f"{len(alive)} process(es) reporting "
             f"({', '.join(sorted({v[1].get('app', '?') for v in alive.values()}))})")
@@ -147,6 +169,10 @@ def evaluate_health(ws: Workspace, *, now: datetime | None = None, heartbeat_tim
             if md.get("collector_ok") is False:
                 add(Level.DEGRADED, "COLLECTOR_UNREACHABLE",
                     f"{who}: central collector unreachable, {md.get('collector_pending')} event(s) spooled")
+        for (host, pid), (ts, md) in dead.items():
+            add(Level.DEGRADED, "APP_PROCESS_LOST",
+                f"{md.get('app')}@{host} pid {pid} stopped reporting {int((now - ts).total_seconds())}s "
+                "ago without a shutdown marker while other processes are still alive")
     elif dead:
         host, pid = max(dead, key=lambda k: dead[k][0])
         ts, md = dead[(host, pid)]

@@ -275,6 +275,20 @@ def run_demo(ai: str = "offline", keep: bool = False, yes: bool = False, color: 
                 any(i.code == "GUARD_REMOVED" and i.level is Level.CRITICAL for i in rep.items))
         d.check("the audit trail verifies throughout",
                 not any(i.code == "AUDIT_CHAIN_BROKEN" for i in rep.items))
+
+        d.banner("9. Recover: restore the guards, restart the app, health clears")
+        _cli("instrument", *p, "--apply")
+        print("   app restarted with guards restored:")
+        _run_app(proj, "normal")
+        _cli("health", *p, "--heartbeat-timeout", "3")
+        rep = evaluate_health(ws, heartbeat_timeout=3)
+        found = {i.code for i in rep.items}
+        d.check("crashed process is recognised as replaced by the restart, not an open outage",
+                "APP_RESTARTED_AFTER_CRASH" in found and "APP_NOT_REPORTING" not in found)
+        d.check("no critical health findings remain after recovery", rep.level is not Level.CRITICAL)
+        states = compute_status(ws, ws.load_analysis()).points
+        n_active = sum(s.state.value == "ACTIVE" for s in states.values())
+        d.check("guarded points are ACTIVE again", n_active >= 3)
     finally:
         if keep:
             print(f"\nkept: {proj}")

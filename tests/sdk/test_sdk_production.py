@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import threading
 import time
@@ -304,6 +305,39 @@ def test_health_alive_then_dead_then_clean_stop(ws):
     s.close()                                                     # writes the stopping marker
     rep = evaluate_health(ws, heartbeat_timeout=30, now=later)
     assert "APP_NOT_REPORTING" not in codes(rep) and codes(rep)["APP_STOPPED"] is Level.INFO
+
+
+def _hb(st, pid, ts, stopping=False, app="biz", host="h"):
+    st.append(SecurityEvent(trace_id=f"t{pid}{ts}", actor_id=f"app.{app}", event_type=EventType.HEARTBEAT,
+                            synthetic=True, timestamp=ts, metadata={
+                                "kind": "app_heartbeat", "pid": pid, "host": host, "app": app,
+                                "stopping": stopping, "policy_ok": True, "policy_digest": None,
+                                "audit_ok": True, "collector_ok": None}))
+
+
+def test_health_crash_then_restart_is_not_an_open_outage(ws):
+    now = datetime.now(UTC)
+    st = AuditStore(ws.audit_path)
+    _hb(st, 1, now - timedelta(seconds=300))                 # crashed: no stop marker
+    _hb(st, 2, now - timedelta(seconds=200))                 # restarted later …
+    _hb(st, 2, now - timedelta(seconds=100), stopping=True)  # … and stopped cleanly
+    st.close()
+    c = codes(evaluate_health(ws, heartbeat_timeout=30, now=now))
+    assert c["APP_RESTARTED_AFTER_CRASH"] is Level.INFO and c["APP_STOPPED"] is Level.INFO
+    assert "APP_NOT_REPORTING" not in c
+
+
+def test_health_lost_replica_reported_while_others_alive(ws):
+    now = datetime.now(UTC)
+    st = AuditStore(ws.audit_path)
+    _hb(st, 1, now - timedelta(seconds=600), host="a")       # replica B started BEFORE A died
+    _hb(st, 2, now - timedelta(seconds=590), host="b")
+    _hb(st, 1, now - timedelta(seconds=300), host="a")       # replica A goes silent
+    _hb(st, 2, now - timedelta(seconds=5), host="b")         # replica B still alive
+    st.close()
+    c = codes(evaluate_health(ws, heartbeat_timeout=30, now=now))
+    assert c["APP_ALIVE"] is Level.OK and c["APP_PROCESS_LOST"] is Level.DEGRADED
+    assert "APP_RESTARTED_AFTER_CRASH" not in c
 
 
 def test_health_reports_app_side_failures(ws):
@@ -641,4 +675,5 @@ def test_retry_after_parsing_and_fallback_config(monkeypatch):
 def test_sdk_demo_offline_passes_all_checks(capsys):
     assert main(["--no-color", "sdk", "demo"]) == 0
     out = capsys.readouterr().out
-    assert "20/20 checks passed" in out and "✘" not in out
+    m = re.search(r"Result: (\d+)/(\d+) checks passed", out)
+    assert m and m.group(1) == m.group(2) and int(m.group(2)) >= 23 and "✘" not in out
